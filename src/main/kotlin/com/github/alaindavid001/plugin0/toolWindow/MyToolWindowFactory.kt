@@ -1,10 +1,11 @@
 package com.github.alaindavid001.plugin0.toolWindow
 
 import com.intellij.icons.AllIcons
-import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.editor.CaretModel
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerEvent
+import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.observable.util.addComponent
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
@@ -33,10 +34,6 @@ import javax.swing.event.DocumentListener
 
 class MyToolWindowFactory : ToolWindowFactory {
 
-    init {
-        thisLogger().warn("Don't forget to remove all non-needed sample code files with their corresponding registration entries in `plugin.xml`.")
-    }
-
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val myToolWindow = MyToolWindow(toolWindow)
         val content = ContentFactory.getInstance().createContent(myToolWindow.getContent(), null, false)
@@ -47,13 +44,34 @@ class MyToolWindowFactory : ToolWindowFactory {
 
     class MyToolWindow(toolWindow: ToolWindow) {
 
+        init {
+            toolWindow.project.messageBus.connect().subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
+                override fun selectionChanged(event: FileEditorManagerEvent) {
+                    updateResults()
+                    addDocumentListenerToSelectedFile(toolWindow.project)
+                }
+            })
+
+            addDocumentListenerToSelectedFile(toolWindow.project)
+        }
+
+        // TODO("Don't use Project as disposable in plugin code")
+        private fun addDocumentListenerToSelectedFile(project: Project) {
+            val editor = FileEditorManager.getInstance(project).selectedTextEditor
+            val document = editor?.document
+
+            document?.addDocumentListener(object : com.intellij.openapi.editor.event.DocumentListener {
+                override fun documentChanged(event: com.intellij.openapi.editor.event.DocumentEvent) {
+                    updateResults()
+                }
+            }, project)
+        }
+
         private val project = toolWindow.project
 //        private val service = toolWindow.project.service<MyProjectService>()
 
         private var myOpenedFileText : String? = NULL_VALUE
         private var myPatterns : List<String> = emptyList()
-
-//        private var ahoCorasick : AhoCorasick = AhoCorasick("", emptyList())
 
         private val addTextFieldButton = JButton(AllIcons.General.Add).apply {
             preferredSize = Dimension(30,30)
@@ -65,7 +83,6 @@ class MyToolWindowFactory : ToolWindowFactory {
         private val textFieldListPanel = JBPanel<JBPanel<*>>().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             alignmentX = Component.CENTER_ALIGNMENT
-            preferredSize = Dimension(0, 300)
 
             addTextFieldWithButton(0)
             add(addTextFieldButton)
@@ -74,7 +91,15 @@ class MyToolWindowFactory : ToolWindowFactory {
 
         private val resultsList = JBPanel<JBPanel<*>>().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            alignmentX = Component.CENTER_ALIGNMENT
+            alignmentY = Component.CENTER_ALIGNMENT
             border = BorderFactory.createEmptyBorder(0,0,10,0)
+            add(JBPanel<JBPanel<*>>().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                alignmentX = Component.CENTER_ALIGNMENT
+                border = BorderFactory.createEmptyBorder(90,0,0,0)
+                add(JBLabel("Please select a file"))
+            })
 //            repeat(100){
 //                add(JBPanel<JBPanel<*>>().apply {
 //                    border = BorderFactory.createEmptyBorder(0,13,0,5)
@@ -167,7 +192,7 @@ class MyToolWindowFactory : ToolWindowFactory {
 //            return "<html><body>${line+1}:${col+1} $before<span style='background-color: #FFD54F;'><font color='black'>$highlighted</font></span>$after </body></html>"
         }
 
-        private fun onTextFieldsUpdate(){
+        private fun updateResults(){
             myOpenedFileText = getOpenedFileText()
             myPatterns = getTextFieldValues()
 
@@ -211,19 +236,42 @@ class MyToolWindowFactory : ToolWindowFactory {
                         })
                     }
                 }
+            } else {
+                resultsList.addComponent(JBPanel<JBPanel<*>>().apply {
+                    layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                    alignmentX = Component.CENTER_ALIGNMENT
+                    border = BorderFactory.createEmptyBorder(90,0,0,0)
+                    add(JBLabel("Please select a file"))
+                })
             }
+            resultsList.revalidate() // Refresh the layout
+            resultsList.repaint() // Repaint the panel
         }
 
         fun getContent() = JBPanel<JBPanel<*>>().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
 
             addTextFieldButton.addActionListener {
-                textFieldListPanel.addTextFieldWithButton(textFieldListPanel.componentCount-1)
+                val newTextField = textFieldListPanel.addTextFieldWithButton(textFieldListPanel.componentCount-1)
                 textFieldListPanel.revalidate() // Refresh the layout
                 textFieldListPanel.repaint() // Repaint the panel
-                onTextFieldsUpdate()
+
+                newTextField.requestFocus() // Focus on the newly added text field
+
+                updateResults()
             }
-            add(textFieldListPanel)
+
+            val scrollPane = JBScrollPane(textFieldListPanel).apply {
+                preferredSize = Dimension(Int.MAX_VALUE, 200)
+                isOverlappingScrollBar = true
+                border = null
+            }
+            add(JBPanel<JBPanel<*>>().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                add(scrollPane)
+            })
+
+            add(Box.createRigidArea(Dimension(0, 8)))
 
             val resultsPanel = JBPanel<JBPanel<*>>().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -262,7 +310,7 @@ class MyToolWindowFactory : ToolWindowFactory {
 //            })
         }
 
-        private fun JBPanel<JBPanel<*>>.addTextFieldWithButton(position: Int) {
+        private fun JBPanel<JBPanel<*>>.addTextFieldWithButton(position: Int): JBTextField {
             // Create the panel that will contain the text field and the icon button
             val panel = JBPanel<JBPanel<*>>()
             panel.layout = BoxLayout(panel, BoxLayout.X_AXIS)
@@ -273,9 +321,9 @@ class MyToolWindowFactory : ToolWindowFactory {
                 maximumSize = Dimension(200, 30)
             }
             textField.document.addDocumentListener(object : DocumentListener {
-                override fun insertUpdate(e: DocumentEvent) = onTextFieldsUpdate()
-                override fun removeUpdate(e: DocumentEvent) = onTextFieldsUpdate()
-                override fun changedUpdate(e: DocumentEvent) = onTextFieldsUpdate()
+                override fun insertUpdate(e: DocumentEvent) = updateResults()
+                override fun removeUpdate(e: DocumentEvent) = updateResults()
+                override fun changedUpdate(e: DocumentEvent) = updateResults()
             })
             panel.add(textField)
 
@@ -288,12 +336,14 @@ class MyToolWindowFactory : ToolWindowFactory {
                     this@addTextFieldWithButton.remove(panel) // Remove the entire panel containing the text field and button
                     this@addTextFieldWithButton.revalidate() // Refresh the layout
                     this@addTextFieldWithButton.repaint() // Repaint the panel
-                    onTextFieldsUpdate()
+                    updateResults()
                 }
             }
             panel.add(iconButton)
 
             add(panel, position)
+
+            return textField
         }
     }
 }
