@@ -30,6 +30,12 @@ import javax.swing.JButton
 import javax.swing.border.LineBorder
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
+import com.intellij.openapi.application.ApplicationManager
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+
 
 
 class MyToolWindowFactory : ToolWindowFactory {
@@ -47,7 +53,7 @@ class MyToolWindowFactory : ToolWindowFactory {
         init {
             toolWindow.project.messageBus.connect().subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
                 override fun selectionChanged(event: FileEditorManagerEvent) {
-                    updateResults()
+                    updateResultsDebounced()
                     addDocumentListenerToSelectedFile(toolWindow.project)
                 }
             })
@@ -62,10 +68,14 @@ class MyToolWindowFactory : ToolWindowFactory {
 
             document?.addDocumentListener(object : com.intellij.openapi.editor.event.DocumentListener {
                 override fun documentChanged(event: com.intellij.openapi.editor.event.DocumentEvent) {
-                    updateResults()
+                    updateResultsDebounced()
                 }
             }, project)
         }
+
+        private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+        private var currentTask: Future<*>? = null
+        private var debounceDelay: Long = 300 // Adjust debounce delay as needed
 
         private val project = toolWindow.project
 //        private val service = toolWindow.project.service<MyProjectService>()
@@ -100,29 +110,6 @@ class MyToolWindowFactory : ToolWindowFactory {
                 border = BorderFactory.createEmptyBorder(90,0,0,0)
                 add(JBLabel("Please select a file"))
             })
-//            repeat(100){
-//                add(JBPanel<JBPanel<*>>().apply {
-//                    border = BorderFactory.createEmptyBorder(0,13,0,5)
-//                    layout = BoxLayout(this, BoxLayout.X_AXIS)
-//                    alignmentX = Component.LEFT_ALIGNMENT
-//                    add(JBLabel("Result:").apply {
-//                        alignmentX = Component.LEFT_ALIGNMENT
-//                    })
-//                    add(Box.createHorizontalGlue()) // This will push the button to the right
-//                    add(JButton(AllIcons.General.ArrowRight).apply {
-//                        preferredSize = Dimension(20, 20)
-//                        minimumSize = Dimension(20, 20)
-//                        maximumSize = Dimension(20, 20)
-//                        alignmentX = Component.CENTER_ALIGNMENT
-//                        isBorderPainted = false // Remove the border
-//                        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-//                        addActionListener {
-//                            println("Button clicked!") // Debug action
-//                        }
-//                    })
-//                })
-//
-//            }
         }
 
         private fun getOpenedFileText(): String? {
@@ -192,60 +179,82 @@ class MyToolWindowFactory : ToolWindowFactory {
 //            return "<html><body>${line+1}:${col+1} $before<span style='background-color: #FFD54F;'><font color='black'>$highlighted</font></span>$after </body></html>"
         }
 
+        fun updateResultsDebounced() {
+            // Cancel the current task if it's still running
+            currentTask?.cancel(true)
+
+            // Schedule a new task with debounce delay
+            currentTask = executor.submit {
+                try {
+                    TimeUnit.MILLISECONDS.sleep(debounceDelay) // Debounce delay
+                    updateResults() // Call your updateResults method
+                } catch (e: InterruptedException) {
+                    // Handle the interruption, if needed
+                }
+            }
+        }
+
         private fun updateResults(){
-            myOpenedFileText = getOpenedFileText()
-            myPatterns = getTextFieldValues()
+            ApplicationManager.getApplication().executeOnPooledThread {
+                myOpenedFileText = getOpenedFileText()
+                myPatterns = getTextFieldValues()
 
-            println(myOpenedFileText ?: "Please open a file")
-            println(myPatterns)
+                println(myOpenedFileText ?: "Please open a file")
+                println(myPatterns)
 
-            resultsList.removeAll()
-            if(myOpenedFileText != null) {
-                val ac = AhoCorasick(myOpenedFileText!!, myPatterns)
-                val answer = ac.getMatches()
-                for ((ind, i) in answer.withIndex()){
-                    println(i)
-                    for(j in i){
-                        val (line, col) = getLineAndColumn(j) ?: Pair(0,0)
-                        val strLen = myPatterns[ind].length
+                resultsList.removeAll()
+                val ac = AhoCorasick(myOpenedFileText ?: "", myPatterns)
 
+                // Update the UI on the Event Dispatch Thread (EDT) after computation finishes
+                ApplicationManager.getApplication().invokeLater {
+                    if(myOpenedFileText != null) {
+
+                        val answer = ac.getMatches()
+                        for ((ind, i) in answer.withIndex()){
+                            println(i)
+                            for(j in i){
+                                val (line, col) = getLineAndColumn(j) ?: Pair(0,0)
+                                val strLen = myPatterns[ind].length
+
+                                resultsList.addComponent(JBPanel<JBPanel<*>>().apply {
+                                    border = BorderFactory.createEmptyBorder(0,13,0,5)
+                                    layout = BoxLayout(this, BoxLayout.X_AXIS)
+                                    alignmentX = Component.LEFT_ALIGNMENT
+        //                            add(JBLabel("Line ${line+1} Col ${col+1}: ${myPatterns[ind]} ---> ${createHighlightedLabelText(getLineText(line)!!,col,myPatterns[ind].length)}").apply {
+        //                                alignmentX = Component.LEFT_ALIGNMENT
+        //                            })
+                                    add(JBLabel(createHighlightedLabelText(line, col, strLen)).apply {
+                                        alignmentX = Component.LEFT_ALIGNMENT
+                                    })
+        //                            add(JBLabel(createHighlightedLabelText(getLineText(line)!!,col,myPatterns[ind].length)))
+                                    add(Box.createHorizontalGlue()) // This will push the button to the right
+                                    add(JButton(AllIcons.General.ArrowRight).apply {
+                                        preferredSize = Dimension(20, 20)
+                                        minimumSize = Dimension(20, 20)
+                                        maximumSize = Dimension(20, 20)
+                                        alignmentX = Component.CENTER_ALIGNMENT
+                                        isBorderPainted = false // Remove the border
+                                        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                                        addActionListener {
+                                            println("Button clicked!" + "   ${myPatterns[ind]}") // Debug action
+                                            moveToCharacter(j)
+                                        }
+                                    })
+                                })
+                            }
+                        }
+                    } else {
                         resultsList.addComponent(JBPanel<JBPanel<*>>().apply {
-                            border = BorderFactory.createEmptyBorder(0,13,0,5)
-                            layout = BoxLayout(this, BoxLayout.X_AXIS)
-                            alignmentX = Component.LEFT_ALIGNMENT
-//                            add(JBLabel("Line ${line+1} Col ${col+1}: ${myPatterns[ind]} ---> ${createHighlightedLabelText(getLineText(line)!!,col,myPatterns[ind].length)}").apply {
-//                                alignmentX = Component.LEFT_ALIGNMENT
-//                            })
-                            add(JBLabel(createHighlightedLabelText(line, col, strLen)).apply {
-                                alignmentX = Component.LEFT_ALIGNMENT
-                            })
-//                            add(JBLabel(createHighlightedLabelText(getLineText(line)!!,col,myPatterns[ind].length)))
-                            add(Box.createHorizontalGlue()) // This will push the button to the right
-                            add(JButton(AllIcons.General.ArrowRight).apply {
-                                preferredSize = Dimension(20, 20)
-                                minimumSize = Dimension(20, 20)
-                                maximumSize = Dimension(20, 20)
-                                alignmentX = Component.CENTER_ALIGNMENT
-                                isBorderPainted = false // Remove the border
-                                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                                addActionListener {
-                                    println("Button clicked!" + "   ${myPatterns[ind]}") // Debug action
-                                    moveToCharacter(j)
-                                }
-                            })
+                            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                            alignmentX = Component.CENTER_ALIGNMENT
+                            border = BorderFactory.createEmptyBorder(90,0,0,0)
+                            add(JBLabel("Please select a file"))
                         })
                     }
+                    resultsList.revalidate() // Refresh the layout
+                    resultsList.repaint() // Repaint the panel
                 }
-            } else {
-                resultsList.addComponent(JBPanel<JBPanel<*>>().apply {
-                    layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                    alignmentX = Component.CENTER_ALIGNMENT
-                    border = BorderFactory.createEmptyBorder(90,0,0,0)
-                    add(JBLabel("Please select a file"))
-                })
             }
-            resultsList.revalidate() // Refresh the layout
-            resultsList.repaint() // Repaint the panel
         }
 
         fun getContent() = JBPanel<JBPanel<*>>().apply {
@@ -257,8 +266,6 @@ class MyToolWindowFactory : ToolWindowFactory {
                 textFieldListPanel.repaint() // Repaint the panel
 
                 newTextField.requestFocus() // Focus on the newly added text field
-
-                updateResults()
             }
 
             val scrollPane = JBScrollPane(textFieldListPanel).apply {
@@ -321,9 +328,9 @@ class MyToolWindowFactory : ToolWindowFactory {
                 maximumSize = Dimension(200, 30)
             }
             textField.document.addDocumentListener(object : DocumentListener {
-                override fun insertUpdate(e: DocumentEvent) = updateResults()
-                override fun removeUpdate(e: DocumentEvent) = updateResults()
-                override fun changedUpdate(e: DocumentEvent) = updateResults()
+                override fun insertUpdate(e: DocumentEvent) = updateResultsDebounced()
+                override fun removeUpdate(e: DocumentEvent) = updateResultsDebounced()
+                override fun changedUpdate(e: DocumentEvent) = updateResultsDebounced()
             })
             panel.add(textField)
 
@@ -336,7 +343,7 @@ class MyToolWindowFactory : ToolWindowFactory {
                     this@addTextFieldWithButton.remove(panel) // Remove the entire panel containing the text field and button
                     this@addTextFieldWithButton.revalidate() // Refresh the layout
                     this@addTextFieldWithButton.repaint() // Repaint the panel
-                    updateResults()
+                    updateResultsDebounced()
                 }
             }
             panel.add(iconButton)
