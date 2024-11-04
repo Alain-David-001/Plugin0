@@ -1,6 +1,7 @@
 package com.github.alaindavid001.plugin0.toolWindow
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.editor.CaretModel
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -31,6 +32,7 @@ import javax.swing.border.LineBorder
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.util.Disposer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -48,7 +50,7 @@ class MyToolWindowFactory : ToolWindowFactory {
 
     override fun shouldBeAvailable(project: Project) = true
 
-    class MyToolWindow(toolWindow: ToolWindow) {
+    class MyToolWindow(toolWindow: ToolWindow) : Disposable {
 
         init {
             toolWindow.project.messageBus.connect().subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
@@ -61,7 +63,6 @@ class MyToolWindowFactory : ToolWindowFactory {
             addDocumentListenerToSelectedFile(toolWindow.project)
         }
 
-        // TODO("Don't use Project as disposable in plugin code")
         private fun addDocumentListenerToSelectedFile(project: Project) {
             val editor = FileEditorManager.getInstance(project).selectedTextEditor
             val document = editor?.document
@@ -70,8 +71,9 @@ class MyToolWindowFactory : ToolWindowFactory {
                 override fun documentChanged(event: com.intellij.openapi.editor.event.DocumentEvent) {
                     updateResultsDebounced()
                 }
-            }, project)
+            }, myDisposable)
         }
+        private val myDisposable : Disposable = Disposer.newDisposable()
 
         private val executor: ExecutorService = Executors.newSingleThreadExecutor()
         private var currentTask: Future<*>? = null
@@ -271,7 +273,7 @@ class MyToolWindowFactory : ToolWindowFactory {
             val scrollPane = JBScrollPane(textFieldListPanel).apply {
                 preferredSize = Dimension(Int.MAX_VALUE, 200)
                 isOverlappingScrollBar = true
-                border = null
+                border = BorderFactory.createEmptyBorder() // Set border to empty
             }
             add(JBPanel<JBPanel<*>>().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -351,6 +353,11 @@ class MyToolWindowFactory : ToolWindowFactory {
             add(panel, position)
 
             return textField
+        }
+
+        override fun dispose() {
+            executor.shutdownNow()
+            Disposer.dispose(myDisposable)
         }
     }
 }
